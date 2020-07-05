@@ -3,6 +3,8 @@ import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 import gym
 import time
+from gradflow_check import *
+
 
 # Info on A2C http://www.cs.cmu.edu/~rsalakhu/10703/Lectures/Lecture_PG2.pdf
 class ActorCritic(torch.nn.Module):
@@ -150,33 +152,46 @@ def train(env, epochs=10, t_per_epoch=5000, lr=0.01, gamma=0.999, seed=123, rend
         # Compute advantages
         epoch_advantages = []
         for i in range(len(epoch_acts)):
-            #epoch_advantages.append(epoch_weights[i] + gamma * (epoch_pred_values[i + 1] if i+1 < len(epoch_acts) else 0) - epoch_pred_values[i])
-            epoch_advantages.append(epoch_weights[i]-epoch_pred_values[i])
+            epoch_advantages.append(epoch_weights[i].detach() + gamma * (epoch_pred_values[i + 1] if i+1 < len(epoch_acts) else 0) - epoch_pred_values[i])
+            #epoch_advantages.append(epoch_weights[i]-epoch_pred_values[i])
 
         # Compute Loss
         epoch_logprobs = torch.stack(epoch_logprobs)
         epoch_advantages = torch.stack(epoch_advantages)
-        epoch_weights = torch.stack(epoch_weights)
+        epoch_weights = torch.stack(epoch_weights).detach()
         epoch_pred_values = torch.stack(epoch_pred_values)
         epoch_lens = torch.FloatTensor(epoch_lens)
 
         # First, we find the actor loss
-        actor_loss = -(epoch_logprobs * epoch_advantages).sum()
+        actor_loss = -(epoch_logprobs * epoch_advantages.detach()).mean()
         # Then the critic MSE loss
-        critic_loss = (epoch_weights - epoch_pred_values).pow_(2).sum()
+        critic_loss = (epoch_weights - epoch_pred_values).pow_(2).mean()
+        #critic_loss = epoch_advantages.pow(2).mean()
         # Since we have one optimizer, we can just add the two losses together
         total_loss = actor_loss + critic_loss
+
+
+        if (epoch + 1) % 100 == 0:
+            torch.save(model.state_dict(), "saves/{}A2C-r{}-e{}.save".format('pongRam-', epoch_weights.mean(), epoch))
 
         # Update Actor and Critic
         model.optimizer.zero_grad()
         total_loss.backward()
+        # if (epoch + 1) % 10 == 0:
+        #     plot_grad_flow(model.named_parameters())
+        # for n, p in model.named_parameters():
+        #     if (p.requires_grad) and ("bias" not in n) and ("critic" in n):
+        #         a = list(p)
+        #         print(a)
+        #         break
         model.optimizer.step()
+
 
         toc = time.perf_counter()
         print('epoch: %3d \t actor_loss: %.3f \t critic_loss: %.3f \t total_loss: %.3f \t advantage: %.3f \t return: %.3f \t ep_len: %.3f \t time: %.3f' %
               (epoch, actor_loss, critic_loss, total_loss, epoch_advantages.mean(), epoch_weights.mean(), epoch_lens.mean(), toc - tic))
 
 if __name__ == '__main__':
-    env = gym.make('CartPole-v0')
-    train(env, epochs=500, t_per_epoch=5000, seed=512, renderMode=True)
+    env = gym.make('LunarLander-v2')
+    train(env, epochs=5000, t_per_epoch=5000, seed=512, renderMode=True)
     env.close()
