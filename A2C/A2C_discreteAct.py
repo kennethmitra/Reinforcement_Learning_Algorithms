@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 import gym
 import time
-from gradflow_check import *
+#from gradflow_check import *
 
 
 # Info on A2C http://www.cs.cmu.edu/~rsalakhu/10703/Lectures/Lecture_PG2.pdf
@@ -19,19 +19,14 @@ class ActorCritic(torch.nn.Module):
         self.obs_cnt = obs_cnt
         self.action_cnt = action_cnt
         self.activation_func = activation_func
-        # self.inputLayer = torch.nn.Linear(obs_cnt, 64)
-        # self.actor_layer = torch.nn.Linear(64, 64)
-        # self.actor_layer2 = torch.nn.Linear(64, action_cnt)
-        # self.critic_layer = torch.nn.Linear(64, 64)
-        # self.critic_layer2 = torch.nn.Linear(64, 1)
 
         # Separate Actor and Critic Networks
         self.actor_layer1 = torch.nn.Linear(obs_cnt, 32)
-        self.actor_layer2 = torch.nn.Linear(32, 32)
+        #self.actor_layer2 = torch.nn.Linear(32, 32)
         self.actor_layer3 = torch.nn.Linear(32, action_cnt)
 
         self.critic_layer1 = torch.nn.Linear(obs_cnt, 32)
-        self.critic_layer2 = torch.nn.Linear(32, 32)
+        #self.critic_layer2 = torch.nn.Linear(32, 32)
         self.critic_layer3 = torch.nn.Linear(32, 1)
 
     def forward(self, obs):
@@ -50,11 +45,11 @@ class ActorCritic(torch.nn.Module):
 
         # Separate Actor and Critic Networks
         actor_intermed = self.activation_func(self.actor_layer1(obs))
-        actor_intermed = self.activation_func(self.actor_layer2(actor_intermed))
+        #actor_intermed = self.activation_func(self.actor_layer2(actor_intermed))
         actionLogits = self.actor_layer3(actor_intermed)
 
         critic_intermed = self.activation_func(self.critic_layer1(obs))
-        critic_intermed = self.activation_func(self.critic_layer2(critic_intermed))
+        #critic_intermed = self.activation_func(self.critic_layer2(critic_intermed))
         value = self.critic_layer3(critic_intermed)
 
 
@@ -67,11 +62,11 @@ def get_discounted_rtg(rewards, gamma):
     rewards_len = len(rewards)
     for i in reversed(range(rewards_len)):
         returns_arr[i] = rewards[i] + (returns_arr[i + 1] * gamma if i + 1 < rewards_len else 0)
-    #returns_arr = (returns_arr - returns_arr.mean()) / returns_arr.std() # Normalize rewards
+    returns_arr = (returns_arr - returns_arr.mean()) / returns_arr.std() # Normalize rewards
     return list(returns_arr)
 
 
-def train(env, epochs=10, t_per_epoch=5000, lr=0.01, gamma=0.999, seed=123, renderMode=True):
+def train(env, epochs=10, t_per_epoch=1000, lr=0.01, gamma=0.999, seed=123, renderMode=True):
     torch.manual_seed(seed)
     env.seed(seed)
     print("Running environment", env)
@@ -152,8 +147,8 @@ def train(env, epochs=10, t_per_epoch=5000, lr=0.01, gamma=0.999, seed=123, rend
         # Compute advantages
         epoch_advantages = []
         for i in range(len(epoch_acts)):
-            epoch_advantages.append(epoch_weights[i].detach() + gamma * (epoch_pred_values[i + 1] if i+1 < len(epoch_acts) else 0) - epoch_pred_values[i])
-            #epoch_advantages.append(epoch_weights[i]-epoch_pred_values[i])
+            #epoch_advantages.append(epoch_weights[i].detach() + gamma * (epoch_pred_values[i + 1] if i+1 < len(epoch_acts) else 0) - epoch_pred_values[i])
+            epoch_advantages.append(epoch_weights[i]-epoch_pred_values[i])
 
         # Compute Loss
         epoch_logprobs = torch.stack(epoch_logprobs)
@@ -165,14 +160,14 @@ def train(env, epochs=10, t_per_epoch=5000, lr=0.01, gamma=0.999, seed=123, rend
         # First, we find the actor loss
         actor_loss = -(epoch_logprobs * epoch_advantages.detach()).mean()
         # Then the critic MSE loss
-        critic_loss = (epoch_weights - epoch_pred_values).pow_(2).mean()
-        #critic_loss = epoch_advantages.pow(2).mean()
+        #critic_loss = (epoch_weights - epoch_pred_values).pow_(2).mean()
+        critic_loss = epoch_advantages.pow(2).mean()
         # Since we have one optimizer, we can just add the two losses together
         total_loss = actor_loss + critic_loss
 
 
         if (epoch + 1) % 100 == 0:
-            torch.save(model.state_dict(), "saves/{}A2C-r{}-e{}.save".format('pongRam-', epoch_weights.mean(), epoch))
+            torch.save(model.state_dict(), "saves/{}A2C-r{}-e{}.save".format('LunarLander-', epoch_weights.mean(), epoch))
 
         # Update Actor and Critic
         model.optimizer.zero_grad()
@@ -193,5 +188,5 @@ def train(env, epochs=10, t_per_epoch=5000, lr=0.01, gamma=0.999, seed=123, rend
 
 if __name__ == '__main__':
     env = gym.make('LunarLander-v2')
-    train(env, epochs=5000, t_per_epoch=5000, seed=512, renderMode=True)
+    train(env, epochs=5000, t_per_epoch=1000, seed=512, renderMode=True)
     env.close()
