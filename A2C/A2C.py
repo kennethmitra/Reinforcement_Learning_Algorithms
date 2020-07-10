@@ -4,8 +4,8 @@ from torch.distributions.categorical import Categorical
 from itertools import count
 import gym
 import matplotlib.pyplot as plt
-from torch.utils.tensorboard import SummaryWriter
-import time
+from Buffer import Buffer
+from Logger import Logger
 
 
 class ActorCritic(torch.nn.Module):
@@ -22,17 +22,13 @@ class ActorCritic(torch.nn.Module):
         self.activation_func = activation_func
 
         # Separate Actor and Critic Networks
-        self.actor_layer1 = torch.nn.Linear(obs_cnt, 32)
-        self.actor_layer3 = torch.nn.Linear(32, action_cnt)
+        # Previous obs_cnt -> 32 -> action_cnt/1
+        self.actor_layer1 = torch.nn.Linear(obs_cnt, 64)
+        self.actor_layer3 = torch.nn.Linear(64, action_cnt)
 
-        self.critic_layer1 = torch.nn.Linear(obs_cnt, 32)
-        self.critic_layer3 = torch.nn.Linear(32, 1)
+        self.critic_layer1 = torch.nn.Linear(obs_cnt, 64)
+        self.critic_layer3 = torch.nn.Linear(64, 1)
 
-        self.episodeMem = []
-        self.episodeRewards = []
-        self.episodeSumRewards = 0
-
-        self.writer = SummaryWriter()
 
     def forward(self, obs):
         """
@@ -56,72 +52,98 @@ class ActorCritic(torch.nn.Module):
         """
         Given an observation, predict action distribution and value and sample action
         :param obs: observation from env.step() or env.reset()
-        :return: sampled action, log prob of sampled action, value calculated by critic
+        :return: sampled action, log prob of sampled action, value calculated by critic, entropy of action prob dist
         """
         action_dist, value = model.forward(obs)
         action = action_dist.sample()
+        entropy = action_dist.entropy()
 
-        return action, action_dist.log_prob(action), value
+        return action, action_dist.log_prob(action), value, entropy
 
-    def record(self, timestep, obs, action, logprob, value):
-        self.episodeMem.append((timestep, obs, action, logprob, value))
+    def save(self, epoch):
+        try:
+            torch.save({'epoch': episode,
+                        'optimizer_params': self.optimizer.state_dict(),
+                        'model_state': self.state_dict()}, './saves/epi{}'.format(episode))
+        except:
+            print('ERROR calling model.save()')
 
-    def record_reward(self, reward, episode):
-        self.episodeRewards.append(reward)
-        self.episodeSumRewards += reward
-
-    def clear_episode_mem(self):
-        self.episodeMem.clear()
-        self.episodeRewards.clear()
-        self.episodeSumRewards = 0
-
-    def update_tensorboard(self, episode):
-        model.writer.add_scalar('Metrics/Raw_Reward', self.episodeSumRewards, episode)
-
-    def learn_from_experience(self, gamma, episode, normalize_returns=True):
+    def discount_rewards_to_go(self, episode_rewards, gamma):
         # Calculate discounted Rewards-To-Go (returns)
         returns = []
         running_sum = 0
-        for r in self.episodeRewards[::-1]:
-            running_sum = r + gamma*running_sum
+        for r in episode_rewards[::-1]:
+            running_sum = r + gamma * running_sum
             returns.insert(0, running_sum)
+        return returns
 
-        # Don't need to backprop through returns so I can convert to tensor after calculation
-        returns = torch.tensor(returns)
-
-        if normalize_returns:
-            returns = (returns - returns.mean()) / returns.std()
-
+    def learn_from_experience(self, data, entropy_coeff, normalize_returns=True,
+                              normalize_advantages=True,
+                              clip_grad=True):
 
         # Sanity Check
-        assert len(self.episodeRewards) == len(self.episodeMem)
-        assert len(returns) == len(self.episodeMem)
+        assert len(data['tstep']) == len(data['obs']) == len(data['act']) == len(data['logp']) == len(data['val']) \
+               == len(data['rew']) == len(data['entropy']) == len(data['disc_rtg_rews']) == len(data['disc_rtg_rews'])
+        assert len(data['per_episode_rews']) == len(data['per_episode_length'])
+
+        # Don't need to backprop through returns
+        returns = torch.tensor(data['disc_rtg_rews'])
+
+        if normalize_returns:
+            # returns = (returns - returns.mean()) / returns.std()
+            returns = (returns) / returns.std()
+
+        # Calculate advantages separately (to apply normalization)
+        advantages = []
+        for return_, value in zip(returns, data['val']):
+            advantages.append(return_ - value)
+
+        advantages = torch.tensor(advantages)
+
+        if normalize_advantages:
+            advantages = (advantages - advantages.mean()) / advantages.std()
+
+        assert len(advantages) == len(data['tstep'])
+
+        # Zero out gradients before calculating loss
+        model.optimizer.zero_grad()
 
         # Calculate actor and critic loss
         actor_loss = []
         critic_loss = []
-        for (timestep, obs, action, logprob, value), return_ in zip(self.episodeMem, returns):
-            return_ = torch.tensor([return_])
-            advantage = return_ - value
+        for logprob, advantage, return_, value in zip(data['logp'], advantages, returns, data['val']):
             actor_loss.append(-(logprob * advantage))
             # Why L1 loss? From pytorch doc:
             # It is less sensitive to outliers than the MSELoss and in some cases prevents exploding gradients
-            critic_loss.append(F.smooth_l1_loss(return_, value))
-            #critic_loss.append(advantage.pow(2))
+            critic_loss.append(F.smooth_l1_loss(return_, torch.squeeze(value)))
+            # critic_loss.append(advantage.pow(2))
 
-        actor_loss = torch.stack(actor_loss).sum()
-        critic_loss = torch.stack(critic_loss).sum()
-        total_loss = actor_loss + critic_loss
+            # Entropy Loss (https://medium.com/@awjuliani/maximum-entropy-policies-in-reinforcement-learning-everyday-life-f5a1cc18d32d)
+            # https://jaromiru.com/2017/03/26/lets-make-an-a3c-implementation/
 
-        #Update Tensorboard
-        self.writer.add_scalar("Loss/Actor_Loss", actor_loss, episode)
-        self.writer.add_scalar("Loss/Critic_Loss", critic_loss, episode)
-        self.writer.add_scalar("Loss/Total_Loss", total_loss, episode)
+        actor_loss = torch.stack(actor_loss).mean()
+        critic_loss = 0.5 * torch.stack(critic_loss).mean()
+        entropy_avg = torch.stack(data['entropy']).mean()
+        entropy_loss = -(entropy_coeff * entropy_avg)
+        total_loss = actor_loss + critic_loss + entropy_loss
 
         # Perform backprop step
-        model.optimizer.zero_grad()
         total_loss.backward()
+        if clip_grad:
+            torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
         model.optimizer.step()
+
+        # Compute info for logging
+        avg_ep_len = torch.tensor(data['per_episode_length'], requires_grad=False, dtype=torch.float).mean().item()
+        avg_ep_raw_rew = torch.tensor(data['per_episode_rews'], requires_grad=False, dtype=torch.float).mean().item()
+        epoch_timesteps = data['tstep'][-1]
+        num_episodes = len(data['per_episode_length'])
+
+        # Return logging info
+        return dict(actor_loss=actor_loss, critic_loss=critic_loss, entropy_loss=entropy_loss, entropy_avg=entropy_avg,
+                    total_loss=total_loss, avg_ep_len=avg_ep_len, avg_ep_raw_rew=avg_ep_raw_rew,
+                    epoch_timesteps=epoch_timesteps, num_episodes=num_episodes)
+
 
 def plot(steps):
     ax = plt.subplot(111)
@@ -134,31 +156,108 @@ def plot(steps):
 
     plt.pause(0.0000001)
 
+
 if __name__ == '__main__':
-    env = gym.make('LunarLander-v2')
-    LEARNING_RATE = 0.01
+    print("-------------------------------GPU INFO--------------------------------------------")
+    print('Available devices ', torch.cuda.device_count())
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print('Current cuda device ', device)
+    print('Current CUDA device name ', torch.cuda.get_device_name(device))
+    print("-----------------------------------------------------------------------------------")
+    ENVIRONMENT = 'LunarLander-v2'
+    SEED = 543
+    LEARNING_RATE = 0.0007
     DISCOUNT_FACTOR = 0.99
-    NUM_EPISODES = 100000
-    model = ActorCritic(obs_cnt=env.observation_space.shape[0], action_cnt=env.action_space.n, activation_func=F.relu)
-    model.optimizer = torch.optim.Adam(lr=LEARNING_RATE, params=model.parameters())
+    ENTROPY_COEFF = 0.1
+    NUM_EPOCHS = 10
+    TIMESTEPS_PER_EPOCH = 100
+    ACTIVATION_FUNC = torch.tanh
+    NORMALIZE_REWARDS = False
+    NORMALIZE_ADVANTAGES = True
+    CLIP_GRAD = True
+    NUM_PROCESSES = 1
+    NOTES = "rewards normalize no subtract mean, clip grad, ent coeff: 0.12, sum not mean"
 
-    for episode in range(NUM_EPISODES):
-        obs = env.reset()
-        episode_rewards = 0
+    torch.manual_seed(SEED)
+    env = gym.make(ENVIRONMENT)
+    env.seed(SEED)
 
-        render = False
-        if episode % 100 == 0:
-            render = True
+    model = ActorCritic(obs_cnt=env.observation_space.shape[0], action_cnt=env.action_space.n,
+                        activation_func=ACTIVATION_FUNC)
+    # model.optimizer = torch.optim.Adam(lr=LEARNING_RATE, params=model.parameters())
+    model.optimizer = torch.optim.RMSprop(params=model.parameters(), alpha=0.99, weight_decay=0, lr=LEARNING_RATE)
 
+    buf = Buffer()
+    log = Logger()
+
+    # Load saved weights
+    # model.load_state_dict(torch.load("./save"))
+    log.log_hparams(ENVIRONMENT=ENVIRONMENT, SEED=SEED, model=model, LEARNING_RATE=LEARNING_RATE,
+                    DISCOUNT_FACTOR=DISCOUNT_FACTOR, ENTROPY_COEFF=ENTROPY_COEFF, activation_func=ACTIVATION_FUNC,
+                    normalize_rewards=NORMALIZE_REWARDS, normalize_advantages=NORMALIZE_ADVANTAGES, clip_grad=CLIP_GRAD,
+                    notes=NOTES, display=True)
+
+    # Setup env for first episode
+    obs = env.reset()
+    episode_rewards = []
+    episode = 0
+    epoch = 0
+
+    # Iterate over epochs
+    for epoch in range(NUM_EPOCHS):
+
+        # Render first episode of each epoch
+        render = True
+
+        # Continue getting timestep data until reach TIMESTEPS_PER_EPOCH
         for timestep in count():
-            action, logprob, value = model.sample_action(obs)
-            model.record(timestep, obs, action, logprob, value)
-            obs, reward, done, _ = env.step(action.item())
-            model.record_reward(reward, episode=episode)
-            episode_rewards += reward
 
+            # Get action prediction from model
+            action, logprob, value, entropy = model.sample_action(obs)
+
+            # Perform action in environment and get new observation and rewards
+            new_obs, reward, done, _ = env.step(action.item())
+
+            # Store state-action information for updating model
+            buf.record(timestep=timestep, obs=obs, act=action, logp=logprob, val=value, entropy=entropy, rew=reward)
+
+            obs = new_obs
+            episode_rewards.append(reward)
             if render: env.render()
-            if done: break
-        model.update_tensorboard(episode)
-        model.learn_from_experience(gamma=DISCOUNT_FACTOR, normalize_returns=False, episode=episode)
-        model.clear_episode_mem()
+
+            if done:
+                render = False
+
+                # Store discounted Rewards-To-Go™
+                ep_disc_rtg = model.discount_rewards_to_go(episode_rewards=episode_rewards, gamma=DISCOUNT_FACTOR)
+                buf.store_episode_stats(episode_rewards=episode_rewards, episode_disc_rtg_rews=ep_disc_rtg,
+                                        episode_length=timestep)
+
+                # Initialize env after end of episode
+                obs = env.reset()
+                episode_rewards.clear()
+                episode += 1
+
+                if timestep >= TIMESTEPS_PER_EPOCH or timestep > 10000:
+                    break
+
+        # Save model
+        if epoch % 100 == 0:
+            try:
+                model.save(epoch=epoch)
+            except:
+                print('ERROR calling model.save()')
+
+        # Train model on epoch data
+        epoch_info = model.learn_from_experience(data=buf.get(), normalize_returns=NORMALIZE_REWARDS,
+                                                 entropy_coeff=ENTROPY_COEFF, clip_grad=CLIP_GRAD)
+
+        # Log epoch statistics and clear buffer
+        log.log_epoch(epoch, epoch_info)
+        buf.clear()
+
+    # After Training
+    model.save(epoch=epoch)
+
+
+    env.close()
