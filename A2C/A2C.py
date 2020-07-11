@@ -60,13 +60,19 @@ class ActorCritic(torch.nn.Module):
 
         return action, action_dist.log_prob(action), value, entropy
 
-    def save(self, epoch):
+    def save(self, epoch, run_name):
         try:
-            torch.save({'epoch': episode,
+            torch.save({'epoch': epoch,
                         'optimizer_params': self.optimizer.state_dict(),
-                        'model_state': self.state_dict()}, './saves/epi{}'.format(episode))
+                        'model_state': self.state_dict()}, f'./saves/{run_name}-epo{epoch}.save')
         except:
             print('ERROR calling model.save()')
+
+    def load(self, path):
+        checkpoint = torch.load(path)
+        self.load_state_dict(checkpoint['model_state'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_params'])
+        return checkpoint['epoch']
 
     def discount_rewards_to_go(self, episode_rewards, gamma):
         # Calculate discounted Rewards-To-Go (returns)
@@ -168,15 +174,16 @@ if __name__ == '__main__':
     SEED = 543
     LEARNING_RATE = 0.0007
     DISCOUNT_FACTOR = 0.99
-    ENTROPY_COEFF = 0.1
-    NUM_EPOCHS = 10
-    TIMESTEPS_PER_EPOCH = 100
+    ENTROPY_COEFF = 0.0
+    NUM_EPOCHS = 100000
+    TIMESTEPS_PER_EPOCH = 5000
     ACTIVATION_FUNC = torch.tanh
     NORMALIZE_REWARDS = False
     NORMALIZE_ADVANTAGES = True
     CLIP_GRAD = True
     NUM_PROCESSES = 1
-    NOTES = "rewards normalize no subtract mean, clip grad, ent coeff: 0.12, sum not mean"
+    RUN_NAME = "A2C_batch"
+    NOTES = "normalize advantages, clip grad, continued run after batching, no entropy coeff"
 
     torch.manual_seed(SEED)
     env = gym.make(ENVIRONMENT)
@@ -188,14 +195,17 @@ if __name__ == '__main__':
     model.optimizer = torch.optim.RMSprop(params=model.parameters(), alpha=0.99, weight_decay=0, lr=LEARNING_RATE)
 
     buf = Buffer()
-    log = Logger()
+    log = Logger(run_name=None, refresh_secs=30)
 
     # Load saved weights
-    # model.load_state_dict(torch.load("./save"))
+    epoch = model.load("./A2Cbatch-epo1800")
+    # Override epoch
+    start_epoch = 1800
+
     log.log_hparams(ENVIRONMENT=ENVIRONMENT, SEED=SEED, model=model, LEARNING_RATE=LEARNING_RATE,
                     DISCOUNT_FACTOR=DISCOUNT_FACTOR, ENTROPY_COEFF=ENTROPY_COEFF, activation_func=ACTIVATION_FUNC,
-                    normalize_rewards=NORMALIZE_REWARDS, normalize_advantages=NORMALIZE_ADVANTAGES, clip_grad=CLIP_GRAD,
-                    notes=NOTES, display=True)
+                    tsteps_per_epoch=TIMESTEPS_PER_EPOCH, normalize_rewards=NORMALIZE_REWARDS,
+                    normalize_advantages=NORMALIZE_ADVANTAGES, clip_grad=CLIP_GRAD, notes=NOTES, display=True)
 
     # Setup env for first episode
     obs = env.reset()
@@ -204,10 +214,10 @@ if __name__ == '__main__':
     epoch = 0
 
     # Iterate over epochs
-    for epoch in range(NUM_EPOCHS):
+    for epoch in range(start_epoch, NUM_EPOCHS):
 
-        # Render first episode of each epoch
-        render = True
+        # Render first episode of every Nth epoch
+        render = ((epoch % 1) == 0)
 
         # Continue getting timestep data until reach TIMESTEPS_PER_EPOCH
         for timestep in count():
@@ -244,7 +254,7 @@ if __name__ == '__main__':
         # Save model
         if epoch % 100 == 0:
             try:
-                model.save(epoch=epoch)
+                model.save(epoch=epoch, run_name=RUN_NAME)
             except:
                 print('ERROR calling model.save()')
 
@@ -257,7 +267,5 @@ if __name__ == '__main__':
         buf.clear()
 
     # After Training
-    model.save(epoch=epoch)
-
-
+    model.save(epoch=epoch, run_name=RUN_NAME)
     env.close()
