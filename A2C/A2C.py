@@ -148,7 +148,8 @@ class ActorCritic(torch.nn.Module):
         # Return logging info
         return dict(actor_loss=actor_loss, critic_loss=critic_loss, entropy_loss=entropy_loss, entropy_avg=entropy_avg,
                     total_loss=total_loss, avg_ep_len=avg_ep_len, avg_ep_raw_rew=avg_ep_raw_rew,
-                    epoch_timesteps=epoch_timesteps, num_episodes=num_episodes)
+                    epoch_timesteps=epoch_timesteps, num_episodes=num_episodes, advantages=advantages,
+                    pred_values=data['val'], disc_rews=returns)
 
 
 def plot(steps):
@@ -170,20 +171,20 @@ if __name__ == '__main__':
     print('Current cuda device ', device)
     print('Current CUDA device name ', torch.cuda.get_device_name(device))
     print("-----------------------------------------------------------------------------------")
-    ENVIRONMENT = 'LunarLander-v2'
+    ENVIRONMENT = 'Pong-ramNoFrameskip-v4'
     SEED = 543
-    LEARNING_RATE = 0.0007
+    LEARNING_RATE = 0.0001
     DISCOUNT_FACTOR = 0.99
-    ENTROPY_COEFF = 0.0
+    ENTROPY_COEFF = 0.2
     NUM_EPOCHS = 100000
-    TIMESTEPS_PER_EPOCH = 5000
-    ACTIVATION_FUNC = torch.tanh
+    TIMESTEPS_PER_EPOCH = 50000
+    ACTIVATION_FUNC = torch.relu
     NORMALIZE_REWARDS = False
     NORMALIZE_ADVANTAGES = True
     CLIP_GRAD = True
     NUM_PROCESSES = 1
-    RUN_NAME = "A2C_batch"
-    NOTES = "normalize advantages, clip grad, continued run after batching, no entropy coeff"
+    RUN_NAME = "Pong-A2C"
+    NOTES = "normalize advantages, clip grad, no entropy coeff"
 
     torch.manual_seed(SEED)
     env = gym.make(ENVIRONMENT)
@@ -191,16 +192,16 @@ if __name__ == '__main__':
 
     model = ActorCritic(obs_cnt=env.observation_space.shape[0], action_cnt=env.action_space.n,
                         activation_func=ACTIVATION_FUNC)
-    # model.optimizer = torch.optim.Adam(lr=LEARNING_RATE, params=model.parameters())
-    model.optimizer = torch.optim.RMSprop(params=model.parameters(), alpha=0.99, weight_decay=0, lr=LEARNING_RATE)
+    model.optimizer = torch.optim.Adam(lr=LEARNING_RATE, params=model.parameters())
+    # model.optimizer = torch.optim.RMSprop(params=model.parameters(), alpha=0.99, weight_decay=0, lr=LEARNING_RATE)
 
     buf = Buffer()
     log = Logger(run_name=None, refresh_secs=30)
 
     # Load saved weights
-    epoch = model.load("./A2Cbatch-epo1800")
+    #epoch = model.load("./A2Cbatch-epo1800")
     # Override epoch
-    start_epoch = 1800
+    start_epoch = 0
 
     log.log_hparams(ENVIRONMENT=ENVIRONMENT, SEED=SEED, model=model, LEARNING_RATE=LEARNING_RATE,
                     DISCOUNT_FACTOR=DISCOUNT_FACTOR, ENTROPY_COEFF=ENTROPY_COEFF, activation_func=ACTIVATION_FUNC,

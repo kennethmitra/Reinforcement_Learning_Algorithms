@@ -1,4 +1,5 @@
 from torch.utils.tensorboard import SummaryWriter
+import torch
 import time
 
 class Logger:
@@ -45,6 +46,11 @@ class Logger:
         self.writer.add_scalar("Loss/Entropy_Loss", epoch_info['entropy_loss'], epoch_no)
         self.writer.add_scalar("Loss/Entropy", epoch_info['entropy_avg'], epoch_no)
         self.writer.add_scalar("Loss/Total_Loss", epoch_info['total_loss'], epoch_no)
+
+        self.writer.add_histogram("Train/disc_rews", epoch_info['disc_rews'], epoch_no)
+        self.writer.add_histogram("Train/pred_values", torch.stack(epoch_info['pred_values']), epoch_no)
+        self.writer.add_histogram("Train/Advantages", epoch_info['advantages'], epoch_no)
+
         self.writer.add_scalar("Metrics/Episode_Length", epoch_info['avg_ep_len'], epoch_no)
         self.writer.add_scalar("Metrics/Actual_Timesteps_per_Epoch", epoch_info['epoch_timesteps'], epoch_no)
         self.writer.add_scalar("Metrics/Episodes_per_Epoch", epoch_info['num_episodes'], epoch_no)
