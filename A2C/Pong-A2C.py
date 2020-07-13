@@ -22,12 +22,15 @@ class ActorCritic(torch.nn.Module):
         self.activation_func = activation_func
 
         # Separate Actor and Critic Networks
-        # Previous obs_cnt -> 32 -> action_cnt/1
         self.actor_layer1 = torch.nn.Linear(obs_cnt, 64)
-        self.actor_layer3 = torch.nn.Linear(64, action_cnt)
+        self.actor_layer2 = torch.nn.Linear(64, action_cnt)
+        torch.nn.init.xavier_uniform_(self.actor_layer1.weight)
+        torch.nn.init.xavier_uniform_(self.actor_layer2.weight)
 
         self.critic_layer1 = torch.nn.Linear(obs_cnt, 64)
-        self.critic_layer3 = torch.nn.Linear(64, 1)
+        self.critic_layer2 = torch.nn.Linear(64, 1)
+        torch.nn.init.xavier_uniform_(self.critic_layer1.weight)
+        torch.nn.init.xavier_uniform_(self.critic_layer2.weight)
 
 
     def forward(self, obs):
@@ -40,10 +43,10 @@ class ActorCritic(torch.nn.Module):
 
         # Separate Actor and Critic Networks
         actor_intermed = self.activation_func(self.actor_layer1(obs))
-        actionLogits = self.actor_layer3(actor_intermed)
+        actionLogits = self.actor_layer2(actor_intermed)
 
         critic_intermed = self.activation_func(self.critic_layer1(obs))
-        value = self.critic_layer3(critic_intermed)
+        value = self.critic_layer2(critic_intermed)
 
         action_dist = Categorical(logits=actionLogits)
         return action_dist, value
@@ -103,6 +106,7 @@ class ActorCritic(torch.nn.Module):
         advantages = []
         for return_, value in zip(returns, data['val']):
             advantages.append(return_ - value)
+            #advantages.append(return_)
 
         advantages = torch.tensor(advantages)
 
@@ -171,11 +175,12 @@ if __name__ == '__main__':
     print('Current cuda device ', device)
     print('Current CUDA device name ', torch.cuda.get_device_name(device))
     print("-----------------------------------------------------------------------------------")
-    ENVIRONMENT = 'Pong-ramNoFrameskip-v4'
+    ENVIRONMENT = 'Pong-v0'
     SEED = 543
-    LEARNING_RATE = 0.0001
+    ACTOR_LEARNING_RATE = 0.0007
+    CRITIC_LEARNING_RATE = 0.0014
     DISCOUNT_FACTOR = 0.99
-    ENTROPY_COEFF = 0.2
+    ENTROPY_COEFF = 0.0
     NUM_EPOCHS = 100000
     TIMESTEPS_PER_EPOCH = 50000
     ACTIVATION_FUNC = torch.relu
@@ -184,7 +189,7 @@ if __name__ == '__main__':
     CLIP_GRAD = True
     NUM_PROCESSES = 1
     RUN_NAME = "Pong-A2C"
-    NOTES = "normalize advantages, clip grad, no entropy coeff"
+    NOTES = "Continued run; normalize advantages, clip grad, no entropy coeff"
 
     torch.manual_seed(SEED)
     env = gym.make(ENVIRONMENT)
@@ -192,19 +197,20 @@ if __name__ == '__main__':
 
     model = ActorCritic(obs_cnt=env.observation_space.shape[0], action_cnt=env.action_space.n,
                         activation_func=ACTIVATION_FUNC)
-    model.optimizer = torch.optim.Adam(lr=LEARNING_RATE, params=model.parameters())
-    # model.optimizer = torch.optim.RMSprop(params=model.parameters(), alpha=0.99, weight_decay=0, lr=LEARNING_RATE)
+    model.optimizer = torch.optim.Adam(params=[{'params': list(model.actor_layer1.parameters()) + list(model.actor_layer2.parameters()), 'lr': ACTOR_LEARNING_RATE},
+                                               {'params': list(model.critic_layer1.parameters()) + list(model.critic_layer2.parameters()), 'lr': CRITIC_LEARNING_RATE}])
 
     buf = Buffer()
     log = Logger(run_name=None, refresh_secs=30)
 
     # Load saved weights
-    #epoch = model.load("./A2Cbatch-epo1800")
+    # epoch = model.load("./saves/Pong-A2C-epo1700.save")
     # Override epoch
     start_epoch = 0
 
-    log.log_hparams(ENVIRONMENT=ENVIRONMENT, SEED=SEED, model=model, LEARNING_RATE=LEARNING_RATE,
-                    DISCOUNT_FACTOR=DISCOUNT_FACTOR, ENTROPY_COEFF=ENTROPY_COEFF, activation_func=ACTIVATION_FUNC,
+    log.log_hparams(ENVIRONMENT=ENVIRONMENT, SEED=SEED, model=model, ACTOR_LEARNING_RATE=ACTOR_LEARNING_RATE,
+                    CRITIC_LEARNING_RATE=CRITIC_LEARNING_RATE, DISCOUNT_FACTOR=DISCOUNT_FACTOR,
+                    ENTROPY_COEFF=ENTROPY_COEFF, activation_func=ACTIVATION_FUNC,
                     tsteps_per_epoch=TIMESTEPS_PER_EPOCH, normalize_rewards=NORMALIZE_REWARDS,
                     normalize_advantages=NORMALIZE_ADVANTAGES, clip_grad=CLIP_GRAD, notes=NOTES, display=True)
 
